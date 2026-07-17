@@ -52,8 +52,8 @@ class PlayConfig:
 def run_play(task_id: str, cfg: PlayConfig):
     configure_torch_backends()
 
-    device = cfg.device or ("cuda:0" if torch.cuda.is_available() else "cpu")
-
+    # device = cfg.device or ("cuda:0" if torch.cuda.is_available() else "cpu")
+    device = "cpu"
     env_cfg = load_env_cfg(task_id, play=True)
     agent_cfg = load_rl_cfg(task_id)
 

@@ -65,6 +65,9 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
         device = f"cuda:{local_rank}"
         # Set seed to have diversity in different processes.
         seed = cfg.agent.seed + local_rank
+    # device = "cpu"
+    # seed = cfg.agent.seed
+    # rank = 0
 
     configure_torch_backends()
 

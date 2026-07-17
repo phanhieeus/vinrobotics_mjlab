@@ -1,0 +1,41 @@
+BÁO CÁO ROBOT VR-M3-1
+(nguồn: vr_m3_1.xml, vr_m3_1_constants.py, scripts/tutor.py)
+
+1) KHỚP ĐIỀU KHIỂN: 27 khớp (chân 12 + waist 1 + tay 14).
+   base_joint là khớp free (6 DoF, không điều khiển); 2 khớp đầu bị comment.
+   Lưu ý: tutor.py in nu=0 vì XML thô không có <actuator>; actuator do mjlab
+   thêm lúc runtime.
+
+   Position range (rad) | Velocity max (rad/s) | Torque (N·m):
+   - hip_pitch:      -2.617…2.617   | 14.653 | ±360
+   - hip_roll (L):   -0.785…2.094   | 14.653 | ±360
+   - hip_roll (R):   -2.094…0.785   | 14.653 | ±360
+   - hip_yaw:        -2.617…2.617   | 31.4   | ±130
+   - knee_pitch:     -0.174…2.356   | 14.653 | ±360
+   - ankle_pitch:    -0.873…0.523   | 16.747 | ±120
+   - ankle_roll:     -0.262…0.262   | 16.747 | ±120
+   - waist_yaw:      -3.14…3.14     | 4.18   | ±102
+   - shoulder_pitch: -3.14…1.57     | 4.29   | ±66
+   - shoulder_roll(L): 0…2.356      | 4.29   | ±66
+   - shoulder_roll(R): -2.356…0     | 4.29   | ±66
+   - shoulder_yaw:   -2.79…2.79     | 5.13   | ±34
+   - elbow_pitch:    -0.524…1.571   | 5.13   | ±34
+   - wrist_yaw:      -2.79…2.79     | 6.17   | ±11
+   - wrist_roll:     -1.571…1.571   | 6.17   | ±11
+   - wrist_pitch:    -1.571…1.571   | 6.17   | ±11
+   (Position lấy từ range trong XML; velocity từ MOTOR_SPECS.max_vel.)
+
+2) IMU: site "imu" gắn trên body pelvis, pos=(0.00614, 0, -0.02485).
+   Đo: gyro=vận tốc góc, velocimeter=vận tốc dài, accelerometer=gia tốc dài.
+
+3) KHỐI LƯỢNG TỔNG: model.body_mass.sum() = 57.335598 kg (≈57.34 kg).
+
+4) OUTPUT tutor.py:
+   - nq=34: 7 (base free: 3 pos + 4 quat) + 27 khớp hinge.
+   - nv=33: 6 (base free: 3 tịnh tiến + 3 quay) + 27 khớp.
+   - nu=0: XML không có <actuator>.
+   - Total mass=57.335598.
+   - Joint names: 28 khớp (base_joint + 27 hinge).
+   - Actuator names: [] (rỗng, cùng lý do nu=0).
+   - Base position [0 0 0], Base quaternion [1 0 0 0] (sau reset, chưa áp home).
+   - Joint positions: 27 số 0 (reset mặc định).
