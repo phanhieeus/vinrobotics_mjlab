@@ -17,8 +17,14 @@
 
 Tương đương lệnh:
 
-    python scripts/train.py VR-M3-1-Flat --env.scene.num-envs=4096 \
-        --agent.max-iterations=2000
+    python scripts/train.py VR-M3-1-Stand --env.scene.num-envs=4096 \
+        --agent.max-iterations=2000 --gpu-ids '[0, 1]'
+
+LƯU Ý ĐA GPU: mỗi rank dựng ĐỦ ``num_envs`` riêng, nên 2 GPU × 4096 = 8192 env
+tổng, và ``Perf/total_fps`` đã gộp sẵn mọi GPU
+(``collection_size = num_steps_per_env * num_envs * world_size``,
+rsl_rl/utils/logger.py:152). Script nhân đúng thừa số này khi quy đổi ngân sách
+phút sang số iteration.
 
 Chỉ khác hai điểm, cả hai đều là bổ sung chứ không đổi hành vi train:
   1. IN TOÀN BỘ thông số của phiên chạy ra màn hình + logs/phase0/ trước khi chạy.
@@ -45,6 +51,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import re
 import shutil
 import statistics
 import subprocess
@@ -84,10 +91,13 @@ def print_run_params(task_id: str, args, cfg, agent) -> str:
     w(f"  GIAI ĐOẠN 0 — ĐO  |  {datetime.now():%Y-%m-%d %H:%M:%S}")
     w(BAR)
 
+    n_gpu = count_gpus(args.gpu_ids)
     sec("Lệnh tương đương")
     w(f"  python scripts/train.py {task_id} \\")
     w(f"      --env.scene.num-envs={args.num_envs} \\")
-    w(f"      --agent.max-iterations={args.iters}")
+    w(f"      --agent.max-iterations={args.iters}" + (" \\" if args.gpu_ids else ""))
+    if args.gpu_ids:
+        w(f"      --gpu-ids '{args.gpu_ids}'")
 
     # --- Phần cứng ---
     sec("Phần cứng")
@@ -110,11 +120,14 @@ def print_run_params(task_id: str, args, cfg, agent) -> str:
     dec = cfg.decimation
     step_dt = timestep * dec
     max_steps = int(cfg.episode_length_s / step_dt)
-    total_steps = args.iters * agent.num_steps_per_env * args.num_envs
-    kv("num_envs", args.num_envs, "<- GHI ĐÈ (config gốc: %s)" % cfg.scene.num_envs)
+    total_steps = args.iters * agent.num_steps_per_env * args.num_envs * n_gpu
+    kv("gpu_ids", args.gpu_ids or "(mặc định [0])", f"= {n_gpu} GPU")
+    kv("num_envs MỖI GPU", args.num_envs, "<- GHI ĐÈ (config gốc: %s)" % cfg.scene.num_envs)
+    if n_gpu > 1:
+        kv("num_envs TỔNG", f"{args.num_envs * n_gpu:,}", "mỗi rank dựng đủ num_envs riêng")
     kv("max_iterations", args.iters, "<- GHI ĐÈ (config gốc: %s)" % agent.max_iterations)
     kv("num_steps_per_env", agent.num_steps_per_env)
-    kv("mẫu / lần update PPO", f"{args.num_envs * agent.num_steps_per_env:,}")
+    kv("mẫu / lần update PPO", f"{args.num_envs * agent.num_steps_per_env * n_gpu:,}")
     kv("TỔNG env-step", f"{total_steps:,}", f"= {total_steps / 1e6:.0f}M")
     w("")
     w("  Đối chiếu run cũ (logs/rsl_rl/vr_m3_1_12dof_velocity/2026-07-15_02-11-33):")
@@ -272,7 +285,9 @@ class VramSampler(threading.Thread):
                 )
                 rows = out.stdout.strip().splitlines()
                 if rows:
-                    self.samples.append(int(rows[0].strip()))
+                    # Nhiều GPU: lấy card đang dùng nhiều nhất, vì OOM xảy ra
+                    # theo TỪNG card chứ không theo tổng.
+                    self.samples.append(max(int(r.strip()) for r in rows if r.strip()))
             except Exception:  # noqa: BLE001, S110
                 pass
             self._stop.wait(self.interval)
@@ -328,10 +343,29 @@ def read_tfevents(run_dir: Path) -> dict:
     return out
 
 
+def count_gpus(gpu_ids: str | None) -> int:
+    """Số GPU thực sự dùng, suy từ chuỗi --gpu-ids ('[0, 1]', 'all', '0'...).
+
+    Cần con số này vì mỗi rank dựng ĐỦ num_envs riêng, nên tổng env và
+    collection_size đều nhân với số GPU (rsl_rl/utils/logger.py:152).
+    """
+    if gpu_ids is None:
+        return 1  # train.py mặc định gpu_ids=[0]
+    if "all" in gpu_ids.lower():
+        try:
+            import torch
+
+            return max(1, torch.cuda.device_count())
+        except Exception:  # noqa: BLE001
+            return 1
+    return max(1, len(re.findall(r"\d+", gpu_ids)))
+
+
 def launch(
-    task: str, num_envs: int, iters: int, exp_dir: Path, extra: list[str] | None = None
+    task: str, num_envs: int, iters: int, exp_dir: Path,
+    gpu_ids: str | None = None, extra: list[str] | None = None,
 ) -> tuple[int, Path | None, int | None, float]:
-    """Chạy scripts/train.py, chỉ ghi đè num_envs + max_iterations.
+    """Chạy scripts/train.py, chỉ ghi đè num_envs + max_iterations (+ gpu_ids).
 
     KHÔNG capture stdout để tiến trình train hiện thẳng trên màn hình.
     ``extra`` để thêm cờ cho lần hiệu chỉnh (tách log, tắt W&B).
@@ -342,8 +376,11 @@ def launch(
         sys.executable, str(REPO / "scripts" / "train.py"), task,
         f"--env.scene.num-envs={num_envs}",
         f"--agent.max-iterations={iters}",
-        *(extra or []),
     ]
+    if gpu_ids:
+        # Truyền nguyên văn: tyro nhận '[0, 1]' hoặc 'all'.
+        cmd += ["--gpu-ids", gpu_ids]
+    cmd += list(extra or [])
     print("\n  $ " + " ".join(cmd) + "\n", flush=True)
 
     vram = VramSampler()
@@ -371,7 +408,10 @@ def latest_run(experiment: str | None = None) -> Path | None:
 # --------------------------------------------------------------------------- #
 # Báo cáo
 # --------------------------------------------------------------------------- #
-def report(m: dict, step_dt: float, max_steps: int, num_envs: int, target_iters: int) -> None:
+def report(
+    m: dict, step_dt: float, max_steps: int, num_envs: int, target_iters: int,
+    n_gpu: int = 1, steps_per_env: int = 32,
+) -> None:
     print("\n" + BAR)
     print("  KẾT QUẢ GIAI ĐOẠN 0")
     print(BAR)
@@ -381,16 +421,19 @@ def report(m: dict, step_dt: float, max_steps: int, num_envs: int, target_iters:
 
     print(f"  log_dir            {m['log_dir']}")
     print(f"  iterations đã chạy {m.get('iters_done', '?')} / {target_iters}")
+    if n_gpu > 1:
+        print(f"  GPU                {n_gpu} card × {num_envs:,} env = {n_gpu * num_envs:,} env tổng")
     if m.get("peak_vram_mb"):
-        print(f"  VRAM đỉnh          {m['peak_vram_mb']:,} MB")
+        print(f"  VRAM đỉnh/card     {m['peak_vram_mb']:,} MB")
 
+    per_iter = steps_per_env * num_envs * n_gpu
     fps = m.get("fps")
     print("\n  [1] THÔNG LƯỢNG")
     if fps:
-        print(f"      Perf/total_fps          {fps:,}")
+        print(f"      Perf/total_fps          {fps:,}" + ("  (đã gộp mọi GPU)" if n_gpu > 1 else ""))
         print(f"      so với run cũ (34 FPS)  {fps / 34:,.0f}×")
         for it in (1000, 3000, 20001):
-            secs = it * 32 * num_envs / fps
+            secs = it * per_iter / fps
             print(f"      {it:>5} iter            ≈ {secs / 3600:6.2f} giờ")
         verdict = (
             "phần cứng là nút thắt — cân nhắc GPU mạnh hơn" if fps < 5000
@@ -432,8 +475,13 @@ def report(m: dict, step_dt: float, max_steps: int, num_envs: int, target_iters:
 def main() -> None:
     p = argparse.ArgumentParser(description="Giai đoạn 0 — đo throughput & tín hiệu học")
     p.add_argument("--task", default="VR-M3-1-Stand", help="mặc định: học đứng vững, full-body")
-    p.add_argument("--num-envs", type=int, default=4096)
+    p.add_argument("--num-envs", type=int, default=4096, help="env MỖI GPU, không phải tổng")
     p.add_argument("--iters", type=int, default=2000)
+    p.add_argument(
+        "--gpu-ids", default=None,
+        help="truyền thẳng cho train.py, ví dụ '[0, 1]' hoặc 'all'. "
+             "Bỏ trống = train.py dùng mặc định [0] (một GPU).",
+    )
     p.add_argument(
         "--minutes", type=float, default=None,
         help="ngân sách train theo PHÚT. Chạy hiệu chỉnh ngắn để đo FPS rồi "
@@ -456,6 +504,7 @@ def main() -> None:
     agent = load_rl_cfg(args.task)
     step_dt = cfg.sim.mujoco.timestep * cfg.decimation
     max_steps = int(cfg.episode_length_s / step_dt)
+    n_gpu = count_gpus(args.gpu_ids)
 
     # --- chế độ chỉ phân tích ---
     if args.analyze:
@@ -463,7 +512,10 @@ def main() -> None:
         if run_dir is None or not run_dir.exists():
             print(f"Không tìm thấy run để phân tích: {args.analyze}")
             sys.exit(1)
-        report(read_tfevents(run_dir), step_dt, max_steps, args.num_envs, args.iters)
+        report(
+            read_tfevents(run_dir), step_dt, max_steps, args.num_envs, args.iters,
+            n_gpu, agent.num_steps_per_env,
+        )
         return
 
     banner = print_run_params(args.task, args, cfg, agent)
@@ -488,7 +540,7 @@ def main() -> None:
         calib_exp = f"{agent.experiment_name}_calib"
         calib_dir = LOG_ROOT / calib_exp
         c_rc, c_dir, _, c_wall = launch(
-            args.task, args.num_envs, args.calib_iters, calib_dir,
+            args.task, args.num_envs, args.calib_iters, calib_dir, args.gpu_ids,
             extra=["--agent.logger=tensorboard", f"--agent.experiment-name={calib_exp}"],
         )
         if c_rc != 0 or c_dir is None:
@@ -498,7 +550,8 @@ def main() -> None:
         if not c_fps:
             print("  Không đọc được FPS khi hiệu chỉnh. Dừng.")
             sys.exit(1)
-        per_iter = agent.num_steps_per_env * args.num_envs
+        # Mỗi rank dựng đủ num_envs riêng ⇒ nhân thêm số GPU.
+        per_iter = agent.num_steps_per_env * args.num_envs * n_gpu
         iters = max(1, int(args.minutes * 60 * c_fps / per_iter))
         print(f"\n  FPS đo được          {c_fps:,}")
         print(f"  ngân sách            {args.minutes} phút")
@@ -507,7 +560,7 @@ def main() -> None:
 
     # --- chạy train.py, chỉ ghi đè num_envs + max_iterations --------------- #
     before = set(exp_dir.glob("*")) if exp_dir.exists() else set()
-    rc, run_dir, peak, wall = launch(args.task, args.num_envs, iters, exp_dir)
+    rc, run_dir, peak, wall = launch(args.task, args.num_envs, iters, exp_dir, args.gpu_ids)
     args.iters = iters  # để report() so đúng mốc
     print(f"\n  Kết thúc: rc={rc}, wall={wall / 60:.1f} phút")
     if run_dir is None:
@@ -522,7 +575,9 @@ def main() -> None:
     m["peak_vram_mb"] = peak
     m["wall_min"] = round(wall / 60, 1)
     m["returncode"] = rc
-    report(m, step_dt, max_steps, args.num_envs, args.iters)
+    m["n_gpu"] = n_gpu
+    m["num_envs_per_gpu"] = args.num_envs
+    report(m, step_dt, max_steps, args.num_envs, args.iters, n_gpu, agent.num_steps_per_env)
 
     out = OUT_DIR / f"results_{stamp}.json"
     out.write_text(json.dumps(m, indent=2, ensure_ascii=False), encoding="utf-8")
