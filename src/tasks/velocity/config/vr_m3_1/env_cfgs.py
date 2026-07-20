@@ -798,6 +798,68 @@ def vr_m3_1_rough_env_cfg(play: bool = False) -> VelocityEnvCfg:
     return cfg
 
 
+def vr_m3_1_stand_env_cfg(play: bool = False) -> VelocityEnvCfg:
+    """Giai đoạn 0 — chỉ học ĐỨNG VỮNG dưới domain randomization.
+
+    Mốc kỹ năng đầu tiên, ngân sách ~10 phút GPU. Không dạy đi: mọi lệnh vận
+    tốc bằng 0, nhiệm vụ duy nhất là không ngã khi bị đẩy và khi tham số vật lý
+    bị ngẫu nhiên hoá.
+
+    Vì sao khả thi trong 10 phút: action dùng ``use_default_offset=True``, nên
+    action = 0 đã tương đương giữ nguyên ``HOME_KEYFRAME``. Policy khởi đầu đã
+    ở gần nghiệm đứng — việc còn lại là học kháng nhiễu, không phải học tư thế
+    từ số 0.
+
+    Ba thay đổi so với ``vr_m3_1_flat_env_cfg``:
+      1. Lệnh vận tốc bị ghim về 0 và MỌI env là env đứng yên.
+      2. Curriculum bị gỡ — nếu giữ, ``commands_vel`` sẽ ghi đè dải lệnh trở
+         lại (-0.3, 0.5) ngay ở lần reset đầu tiên.
+      3. Reward dồn về giữ thăng bằng; các term dáng đi đặt weight 0.
+
+    Domain randomization giữ NGUYÊN toàn bộ 12 term startup + ``push_robot``:
+    đó chính là thứ ta muốn robot đứng vững trước.
+    """
+    cfg = vr_m3_1_flat_env_cfg(play=play)
+
+    # --- 1. Lệnh = 0 tuyệt đối -------------------------------------------- #
+    # Đặt SAU khi gọi flat_env_cfg để thắng cả phần ghi đè của chế độ play.
+    twist = cfg.commands["twist"]
+    assert isinstance(twist, UniformVelocityCommandCfg)
+    twist.ranges.lin_vel_x = (0.0, 0.0)
+    twist.ranges.lin_vel_y = (0.0, 0.0)
+    twist.ranges.ang_vel_z = (0.0, 0.0)
+    twist.rel_standing_envs = 1.0  # 100% env đứng yên
+
+    # --- 2. Gỡ curriculum -------------------------------------------------- #
+    # commands_vel mutate trực tiếp cfg.ranges nên buộc phải gỡ, không thể chỉ
+    # đặt lại dải ở trên.
+    cfg.curriculum = {}
+
+    # --- 3. Reward dồn về giữ thăng bằng ---------------------------------- #
+    # Các term dáng đi vốn đã tự gate theo độ lớn lệnh (command_threshold) nên
+    # với lệnh = 0 chúng đã bằng 0; đặt weight 0 để log sạch và khỏi tính thừa.
+    for name in (
+        "feet_air_time_biped",  # thưởng nhấc chân — phản tác dụng khi đứng
+        "foot_clearance",
+        "foot_slip",
+        "knee_motion",  # thưởng gối chuyển động — phản tác dụng khi đứng
+        "dont_wait",  # phạt đứng im khi có lệnh tiến; ở đây không có lệnh
+    ):
+        if name in cfg.rewards:
+            cfg.rewards[name].weight = 0.0
+
+    # Bám lệnh 0 = giữ nguyên tại chỗ. Vẫn hữu ích (phạt trôi) nhưng theo yêu
+    # cầu thì chưa cần cao.
+    for name in ("track_linear_x", "track_linear_y", "track_angular_z"):
+        cfg.rewards[name].weight = 1.0
+
+    # Hai trụ cột của việc đứng: giữ đúng tư thế mặc định, và không ngã.
+    cfg.rewards["pose"].weight = 2.0  # variable_posture, std_standing = 0.05
+    cfg.rewards["stand_still"].weight = -2.0
+
+    return cfg
+
+
 def vr_m3_1_flat_env_cfg(play: bool = False) -> VelocityEnvCfg:
     """Create VR M3.1 flat terrain velocity configuration."""
     cfg = vr_m3_1_rough_env_cfg(play=play)

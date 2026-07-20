@@ -56,3 +56,21 @@ def vr_m3_1_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
         num_steps_per_env=32,
         max_iterations=20_001,
     )
+
+
+def vr_m3_1_stand_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
+    """RL config cho task đứng vững (giai đoạn 0, ngân sách ~10 phút).
+
+    Giống hệt bản velocity trừ ba điểm hợp với run rất ngắn:
+      - ``save_interval=25``: run chỉ vài trăm iteration, để 1000 như bản gốc
+        thì gần như không có checkpoint nào được ghi giữa chừng.
+      - ``max_iterations=300``: chỉ là mặc định an toàn; giá trị thật do
+        ``scripts/phase0_measure.py`` tính từ ngân sách phút rồi ghi đè.
+      - log/W&B tách riêng để không lẫn với run velocity.
+    """
+    cfg = vr_m3_1_ppo_runner_cfg()
+    cfg.experiment_name = "vr_m3_1_stand"
+    cfg.wandb_project = "vr_m3_1_stand"
+    cfg.save_interval = 25
+    cfg.max_iterations = 300
+    return cfg

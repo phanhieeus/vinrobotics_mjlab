@@ -4,14 +4,20 @@
 # Dùng: bash sync_from_remote.sh
 set -uo pipefail
 
-SSH="ssh -p 34124 -o BatchMode=yes -o ConnectTimeout=20 root@14.179.88.48"
+# Máy thuê đổi mỗi lần → cho phép truyền qua biến môi trường, khỏi sửa file:
+#   REMOTE_HOST=root@1.2.3.4 REMOTE_PORT=12345 bash sync_from_remote.sh
+REMOTE_HOST="${REMOTE_HOST:-root@14.179.88.48}"
+REMOTE_PORT="${REMOTE_PORT:-34124}"
+SSH="ssh -p $REMOTE_PORT -o BatchMode=yes -o ConnectTimeout=20 $REMOTE_HOST"
 REMOTE_DIR="/workspace/vinrobotics_mjlab"
-LOCAL_DIR="/d/HocLieu/vinrobotics_mjlab/remote_sync"
-STATE="$LOCAL_DIR/.last_sync_epoch"
+# Giải nén thẳng vào gốc repo: logs/ remote sẽ hoà vào logs/ local, giữ nguyên
+# format logs/rsl_rl/<experiment>/<datetime>/ — không tạo thư mục trung gian.
+LOCAL_DIR="/d/HocLieu/vinrobotics_mjlab"
+STATE="$LOCAL_DIR/logs/.last_sync_epoch"
 # Các đường (tương đối trong REMOTE_DIR) cần kéo về:
 PATHS="logs wandb train.log"
 
-mkdir -p "$LOCAL_DIR"
+mkdir -p "$LOCAL_DIR/logs"
 
 LAST=0
 [ -f "$STATE" ] && LAST=$(cat "$STATE" 2>/dev/null || echo 0)
